@@ -1,127 +1,67 @@
 package main
 
 import (
-	"categories-api/model"
-	"categories-api/repository"
+	"categories-api/database"
+	"categories-api/handlers"
+	"categories-api/repositories"
+	"categories-api/services"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"strconv"
+	"os"
 	"strings"
+
+	"github.com/spf13/viper"
 )
 
-func getCategories(w http.ResponseWriter, r *http.Request) {
-	var categories = repository.GetCategories()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(categories)
-}
-func createNewCategory(w http.ResponseWriter, r *http.Request) {
-	var newCategory model.Category
-	err := json.NewDecoder(r.Body).Decode(&newCategory)
-	if err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
-	}
-	created := repository.AddCategory(newCategory)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(created)
-
-}
-
-func getData() {
-	repository.GetCategories()
-}
-
-func deleteProductById(w http.ResponseWriter, r *http.Request) {
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/categories/")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
-	}
-	if !repository.DeleteCategoryById(id) {
-		http.Error(w, "Category Is Not Found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"message": "Category is successfully deleted",
-	})
-}
-
-func updateCategoryById(w http.ResponseWriter, r *http.Request) {
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/categories/")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
-	}
-	var updatedCategory model.Category
-	err = json.NewDecoder(r.Body).Decode(&updatedCategory)
-	if err != nil {
-		http.Error(w, "Invalid Request", http.StatusBadRequest)
-		return
-	}
-	if !repository.UpdateCategoryById(id, updatedCategory) {
-		http.Error(w, "Category is not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	updatedCategory.ID = id
-	json.NewEncoder(w).Encode(updatedCategory)
-}
-
-func getCategoryById(w http.ResponseWriter, r *http.Request) {
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/categories/")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
-	}
-	category := repository.GetCategoryById(id)
-	if category == nil {
-		http.Error(w, "Category is not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(category)
-
+type Config struct {
+	Port   string `mapstructure:"PORT"`
+	DBConn string `mapstructure:"DB_CONN"`
 }
 
 func main() {
-	http.HandleFunc("/api/categories", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			getCategories(w, r)
-		case http.MethodPost:
-			createNewCategory(w, r)
-		}
-	})
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	if _, err := os.Stat(".env"); err == nil {
+		viper.SetConfigFile(".env")
+		_ = viper.ReadInConfig()
+	}
+	config := Config{
+		Port:   viper.GetString("PORT"),
+		DBConn: viper.GetString("DB_CONN"),
+	}
+	db, err := database.InitDB(config.DBConn)
+	if err != nil {
+		log.Fatal("Failed to init database: ", err)
+	}
+	defer db.Close()
 
-	http.HandleFunc("/api/categories/", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodDelete:
-			deleteProductById(w, r)
-		case http.MethodPut:
-			updateCategoryById(w, r)
-		case http.MethodGet:
-			getCategoryById(w, r)
-		}
-	})
+	// Dependency Injection for category and product
+	categoryRepo := repositories.NewCategoryRepository(db)
+	categoryService := services.NewCategoryService(categoryRepo)
+	categoryHandler := handlers.NewCategoryHandler(categoryService)
+	productRepo := repositories.NewProductRepository(db)
+	productService := services.NewProductService(productRepo)
+	productHandler := handlers.NewProductHandler(productService)
+
+	// Setup Routes
+	http.HandleFunc("/api/category", categoryHandler.HandleCategory)
+	http.HandleFunc("/api/category/", categoryHandler.HandleCategoryById)
+	http.HandleFunc("/api/product", productHandler.HandleProduct)
+	http.HandleFunc("/api/product/", productHandler.HandleProductById)
 
 	http.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"Status":  "OK",
-			"Message": "Server running on port 8080",
+			"Message": "API is running",
 		})
 	})
+	fmt.Println("Server running di localhost:" + config.Port)
 
-	fmt.Println("Server running on port 8080")
-	err := http.ListenAndServe(":8080", nil)
+	err = http.ListenAndServe(":"+config.Port, nil)
 	if err != nil {
-		fmt.Println("Server error while starting:", err)
+		fmt.Println("gagal running server")
 	}
 }
